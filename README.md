@@ -1,5 +1,7 @@
 # wb-conversation-cleanup
 
+[English](README_EN.md) | 简体中文
+
 > 你在 WorkBuddy 里点了「删除对话」，它没有真的删除。
 > 这个文件，直到你动手之前，一直躺在你的硬盘上。
 
