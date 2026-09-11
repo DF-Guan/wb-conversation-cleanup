@@ -78,16 +78,29 @@ UPDATE sessions SET deleted_at = <时间戳> WHERE id = <会话UUID>
 
 ### 作为 Skill（推荐，WorkBuddy / Claude Code 用户）
 
+两份工具用同一份 SKILL.md，只是安装目录不同 —— 按你手上的工具挑一个：
+
 ```bash
+# WorkBuddy
 git clone https://github.com/DF-Guan/wb-conversation-cleanup.git \
     ~/.workbuddy/skills/wb-conversation-cleanup
+
+# Claude Code
+git clone https://github.com/DF-Guan/wb-conversation-cleanup.git \
+    ~/.claude/skills/wb-conversation-cleanup
 ```
 
 装好后直接在对话里说：
 
-> 清理对话 / 删除聊天记录 / 释放空间 / purge chat history
+> 清理对话 / 删除聊天记录 / 释放空间 / 清理缓存 / purge chat history
 
 Agent 会自动加载并按流程执行。
+
+> **给 Claude Code 用户的提示**：调用技能时工作目录不会切换到技能目录，因此务必用 `${CLAUDE_SKILL_DIR}` 拼脚本路径：
+> ```bash
+> python "${CLAUDE_SKILL_DIR}/scripts/cleanup.py" --list
+> ```
+> SKILL.md 里已把这条写成硬性第一步。
 
 ### 作为独立脚本（不用 AI 工具的人）
 
@@ -120,25 +133,44 @@ Agent：请先退出 WorkBuddy → 执行 → 报告释放了多少空间
 # 先看清单，什么都不删（这一步建议永远别跳过）
 python scripts/cleanup.py --list
 
-# 只清界面里已删除的那些，删前备份
-python scripts/cleanup.py --soft-deleted --backup
+# 看看最占地方的是哪几个（按体积倒序）
+python scripts/cleanup.py --list --top 10
 
-# 清全部对话（--yes 跳过二次确认）
+# 只预览缓存清理会长什么样
+python scripts/cleanup.py --list --cache-only
+
+# 【最常用】只清缓存，保留所有对话
+python scripts/cleanup.py --cache-only --backup --yes
+
+# 只清界面里已删除的那些
+python scripts/cleanup.py --soft-deleted --backup --yes
+
+# 只清 30 天前的对话（支持 30d / 6m / 1y）
+python scripts/cleanup.py --older-than 30d --backup --yes
+
+# 清全部对话
 python scripts/cleanup.py --all --backup --yes
 
-# 全部对话 + 缓存目录（blobs / file-history / traces / artifact-index）
+# 全部对话 + 缓存目录
 python scripts/cleanup.py --all --include-cache --backup --yes
+
+# 后悔了，从备份还原
+python scripts/cleanup.py --restore ~/Desktop/WB-Cleanup-Backup/files-0911-092353
 ```
 
 ### 参数
 
 | 参数 | 作用 |
 |---|---|
-| `--list` | 只预览，绝不删除 |
+| `--list` | 只预览，绝不删除。**可与其他模式组合**（`--list --cache-only`） |
+| `--cache-only` | **只清缓存，保留所有对话** |
 | `--soft-deleted` | 只处理 `deleted_at` 非空的会话 |
+| `--older-than AGE` | 只处理早于该时间的会话，支持 `30d` / `6m` / `1y` |
 | `--all` | 处理所有会话 |
+| `--top N` | 按体积倒序只取前 N 项 |
 | `--include-cache` | 附带清理 blobs / file-history / traces / artifact-index |
-| `--backup` | 删除前备份到 `~/Desktop/WB-Cleanup-Backup/<时间戳>/` |
+| `--backup` | 删除前备份到 `~/Desktop/WB-Cleanup-Backup/<时间戳>/`（含 `_manifest.txt`） |
+| `--restore DIR` | 从备份目录还原，文件回到**原始路径** |
 | `--purge-db` | 额外清空数据库里的会话列表（会先备份数据库） |
 | `--yes` | 跳过 `DELETE` 确认输入 |
 | `--backup-dir PATH` | 自定义备份根目录 |
@@ -153,8 +185,10 @@ python scripts/cleanup.py --all --include-cache --backup --yes
 2. **进程守护** —— 检测到 WorkBuddy 还在跑就不删（预览除外），避免删掉一半
 3. **双重确认** —— 手动输入 `DELETE`，或 Agent 已在对话中征得同意后才用 `--yes`
 4. **默认可备份** —— 备份开着才会后悔有门
-5. **范围严格限定** —— 只碰 `projects/`、四个缓存目录和 `workbuddy.db`；不碰 `skills/`、`connectors/`、`credentials/`
-6. **--purge-db 会先备份数据库** —— 包括 `.db` / `-wal` / `-shm` 三个文件
+5. **备份可还原** —— 备份目录里带 `_manifest.txt`，记录原始绝对路径，`--restore` 能把文件放回原位
+6. **范围严格限定** —— 只碰 `projects/`、四个缓存目录和 `workbuddy.db`；不碰 `skills/`、`connectors/`、`credentials/`
+7. **--purge-db 会先备份数据库** —— 包括 `.db` / `-wal` / `-shm` 三个文件
+8. **留痕** —— 每次删除追加一行到 `~/.workbuddy/cleanup-audit.log`，事后可查删了什么、什么时候删的
 
 ### 顺序很重要
 
@@ -178,8 +212,21 @@ python scripts/cleanup.py --all --include-cache --backup --yes
 **Q：当前正在聊的这个对话能删吗？**
 不能，文件正被占用。退出 WorkBuddy 后自然可删，不需要特殊处理。
 
+**Q：我只想释放空间，不想删对话？**
+用 `--cache-only`。`blobs` 和 `traces` 通常比对话本体大得多，清这两个就够了。
+
+**Q：之前 `--all --include-cache` 会连对话一起删，太吓人？**
+那是 1.0 的设计缺陷，1.1 已修：缓存清理现在是独立模式，不再捆绑删除对话。
+
+**Q：删完后悔了怎么办？**
+只要当时带了 `--backup`，就能还原：`python scripts/cleanup.py --restore <备份目录>`。
+若备份里没有 `_manifest.txt`（1.0 生成的老备份没有），则无法自动定位原始路径。
+
 **Q：多久清一次合适？**
-`blobs` 和 `traces` 增长最快，建议一个月左右 `--include-cache` 一次。
+`blobs` 和 `traces` 增长最快，建议一个月左右 `--cache-only` 一次。
+
+**Q：作为 Claude Code 技能为什么报「找不到脚本」？**
+调用技能不会切换工作目录，相对路径会失效。用 `${CLAUDE_SKILL_DIR}/scripts/cleanup.py`。
 
 ---
 
@@ -199,10 +246,20 @@ python scripts/cleanup.py --all --include-cache --backup --yes
 
 | 平台 | 状态 |
 |---|---|
-| Windows | ✅ 已实测（含 NativeCommandError / 回收站行为） |
-| macOS / Linux | ✅ 代码支持（`pgrep` 检测、`expanduser("~")` 路径），尚未实机测试 |
+| Windows | ✅ 已实测（含回收站行为、PowerShell 编码） |
+| macOS / Linux | ⚠️ 代码支持（`pgrep` 检测、`expanduser("~")` 路径），**尚未实机测试** |
+| Claude Code | ✅ 兼容（frontmatter 字段均被支持），需用 `${CLAUDE_SKILL_DIR}` 定位脚本 |
+| WorkBuddy | ✅ 原生支持 |
 
-需要 Python 3.8+，无第三方依赖。
+需要 Python 3.9+，**无第三方依赖**。三平台 × 三个 Python 版本由 GitHub Actions 自动跑测试。
+
+### 自行验证
+
+```bash
+python tests/test_cleanup.py
+```
+
+8 个用例，全部用临时目录和假数据，不会碰到你的真实文件。
 
 ---
 
